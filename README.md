@@ -20,6 +20,11 @@
 | claudeResurrect.autoRestoreMaxAge | 24 | Maximum age (hours) of sessions to auto-restore |
 | claudeResurrect.claudePath | "claude" | Path to the Claude CLI executable |
 
+## Limitations
+
+- **This extension does not manage session data.** It only reads what Claude CLI creates. Sessions with no conversation (e.g., opened and immediately closed) are excluded from the session list, but cannot be deleted by this extension.
+- **Read-only by design.** Deleting or modifying `~/.claude/` data is out of scope. Use Claude CLI directly to manage session history.
+
 ## Data Access
 
 This extension reads the following from `~/.claude/`:

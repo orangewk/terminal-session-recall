@@ -169,6 +169,13 @@ async function resumeSession(
     return;
   }
 
+  if (lookupSessionFileSize(projectPath, sessionId) === 0) {
+    vscode.window.showWarningMessage(
+      `Terminal Session Recall: Session ${sessionId.slice(0, 8)} has no conversation data. Skipping.`,
+    );
+    return;
+  }
+
   const terminalName = `Claude: ${displayName.slice(0, 30)}`;
 
   await store.upsert({
@@ -184,7 +191,7 @@ async function resumeSession(
     cwd: projectPath,
     isTransient: true,
   });
-  terminal.sendText(`${getClaudePath()} --session-id ${sessionId}`);
+  terminal.sendText(`${getClaudePath()} --resume ${sessionId}`);
   terminal.show();
 
   onUpdate();
@@ -236,11 +243,17 @@ async function showQuickPick(
   // Discover sessions from history.jsonl that we don't track
   const discovered = discoverSessions(projectPath);
   const trackedIds = new Set(allByProject.map((m) => m.sessionId));
-  const untrackedSessions = discovered.filter((d) => !trackedIds.has(d.sessionId));
+  const untrackedSessions = discovered.filter(
+    (d) => !trackedIds.has(d.sessionId) && d.fileSize > 0,
+  );
+
+  // Filter out tracked sessions with no conversation data
+  const hasFile = (m: SessionMapping): boolean =>
+    lookupSessionFileSize(projectPath, m.sessionId) > 0;
 
   // Merge inactive + untracked into resumable, sorted by lastSeen, limited to N
   const merged = [
-    ...inactiveItems.map((m) => ({ lastSeen: m.lastSeen, kind: "tracked" as const, mapping: m })),
+    ...inactiveItems.filter(hasFile).map((m) => ({ lastSeen: m.lastSeen, kind: "tracked" as const, mapping: m })),
     ...untrackedSessions.map((d) => ({ lastSeen: d.lastSeen, kind: "discovered" as const, session: d })),
   ].sort((a, b) => b.lastSeen - a.lastSeen);
 
