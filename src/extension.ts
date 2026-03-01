@@ -11,7 +11,7 @@ let cleanupWatcher: (() => void) | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const store = SessionStore.fromState(context.globalState);
-  const projectPath = getProjectPath();
+  let projectPath = getProjectPath();
 
   // --- Status Bar ---
   const statusBar = vscode.window.createStatusBarItem(
@@ -67,31 +67,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // --- Session Tracking (fs.watch) ---
-  if (projectPath) {
-    const knownIds = new Set(listSessionIds(projectPath));
-
-    cleanupWatcher = watchProjectDir(projectPath, knownIds, (sessionId) => {
-      // A new session appeared — associate with the most recently created
-      // untracked Claude terminal (if any)
-      const pending = pendingTerminals.shift();
-      if (pending) {
-        const displayName = getSessionDisplayName(sessionId);
-        const mapping: SessionMapping = {
-          terminalName: pending.name,
-          sessionId,
-          projectPath,
-          lastSeen: Date.now(),
-          firstPrompt: displayName,
-        };
-        void store.upsert(mapping);
-        updateStatusBar();
-      }
-    });
-
-    context.subscriptions.push({ dispose: () => cleanupWatcher?.() });
-  }
-
   // --- Terminal lifecycle tracking ---
   context.subscriptions.push(
     vscode.window.onDidCloseTerminal((terminal) => {
@@ -102,15 +77,52 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // --- Auto-restore on startup ---
-  if (projectPath) {
+  // --- Initialize project-specific features ---
+  const initProject = (path: string): void => {
+    const knownIds = new Set(listSessionIds(path));
+
+    cleanupWatcher = watchProjectDir(path, knownIds, (sessionId) => {
+      const pending = pendingTerminals.shift();
+      if (pending) {
+        const displayName = getSessionDisplayName(sessionId);
+        const mapping: SessionMapping = {
+          terminalName: pending.name,
+          sessionId,
+          projectPath: path,
+          lastSeen: Date.now(),
+          firstPrompt: displayName,
+        };
+        void store.upsert(mapping);
+        updateStatusBar();
+      }
+    });
+
+    context.subscriptions.push({ dispose: () => cleanupWatcher?.() });
+
+    // Auto-restore
     const config = vscode.workspace.getConfiguration("claudeResurrect");
     const autoRestore = config.get<boolean>("autoRestore", true);
     const ttlHours = config.get<number>("autoRestoreMaxAge", 24);
 
     if (autoRestore) {
-      void autoRestoreSessions(store, projectPath, ttlHours, updateStatusBar);
+      void autoRestoreSessions(store, path, ttlHours, updateStatusBar);
     }
+  };
+
+  if (projectPath) {
+    initProject(projectPath);
+  } else {
+    // Workspace not ready yet — wait for folder to open
+    const folderListener = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const newPath = getProjectPath();
+      if (newPath) {
+        projectPath = newPath;
+        folderListener.dispose();
+        updateStatusBar();
+        initProject(newPath);
+      }
+    });
+    context.subscriptions.push(folderListener);
   }
 }
 
