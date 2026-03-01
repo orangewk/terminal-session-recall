@@ -6,7 +6,6 @@ export interface SessionMapping {
   readonly sessionId: string;
   readonly projectPath: string;
   readonly lastSeen: number; // Unix ms timestamp
-  readonly firstPrompt?: string; // first user input for display
   readonly status: SessionStatus;
 }
 
