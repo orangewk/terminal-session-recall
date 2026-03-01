@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as crypto from "node:crypto";
 import { SessionStore } from "./session-store";
-import { discoverSessions, isValidSessionId, lookupSessionFileSize } from "./claude-dir";
+import { discoverSessions, isValidSessionId, lookupSessionFileSize, readFirstPrompt } from "./claude-dir";
 import type { SessionMapping } from "./types";
 import type { DiscoveredSession } from "./claude-dir";
 
@@ -176,7 +176,6 @@ async function resumeSession(
     sessionId,
     projectPath,
     lastSeen: Date.now(),
-    firstPrompt: displayName,
     status: "active",
   });
 
@@ -206,7 +205,8 @@ async function autoRestoreSessions(
   const skipped = active.length - toRestore.length;
 
   for (const mapping of toRestore) {
-    const displayName = mapping.firstPrompt ?? mapping.sessionId.slice(0, 8);
+    const displayName =
+      readFirstPrompt(projectPath, mapping.sessionId) ?? mapping.sessionId.slice(0, 8);
     await resumeSession(store, mapping.sessionId, displayName, projectPath, onUpdate);
   }
 
@@ -278,10 +278,11 @@ async function showQuickPick(
     });
     for (const mapping of activeItems) {
       const size = formatSize(lookupSessionFileSize(projectPath, mapping.sessionId));
+      const activePrompt = readFirstPrompt(projectPath, mapping.sessionId);
       items.push({
         label: `$(circle-filled) ${mapping.terminalName}`,
         description: [
-          mapping.firstPrompt ? `"${mapping.firstPrompt.slice(0, 40)}"` : mapping.sessionId.slice(0, 8),
+          activePrompt ? `"${activePrompt.slice(0, 40)}"` : mapping.sessionId.slice(0, 8),
           size,
           formatAge(mapping.lastSeen),
         ].filter(Boolean).join(" · "),
@@ -298,8 +299,10 @@ async function showQuickPick(
     if (remaining <= 0) break;
     if (entry.kind === "tracked") {
       const size = formatSize(lookupSessionFileSize(projectPath, entry.mapping.sessionId));
+      const trackedPrompt =
+        readFirstPrompt(projectPath, entry.mapping.sessionId) ?? entry.mapping.sessionId.slice(0, 8);
       resumableMenuItems.push({
-        label: `$(circle-outline) ${entry.mapping.firstPrompt ?? entry.mapping.sessionId.slice(0, 8)}`,
+        label: `$(circle-outline) ${trackedPrompt}`,
         description: [size, formatAge(entry.mapping.lastSeen)].filter(Boolean).join(" · "),
         action: "resume-tracked",
         mapping: entry.mapping,
@@ -330,8 +333,10 @@ async function showQuickPick(
   for (const mapping of completedItems) {
     if (remaining <= 0) break;
     const size = formatSize(lookupSessionFileSize(projectPath, mapping.sessionId));
+    const completedPrompt =
+      readFirstPrompt(projectPath, mapping.sessionId) ?? mapping.sessionId.slice(0, 8);
     completedMenuItems.push({
-      label: `$(check) ${mapping.firstPrompt ?? mapping.sessionId.slice(0, 8)}`,
+      label: `$(check) ${completedPrompt}`,
       description: [size, formatAge(mapping.lastSeen)].filter(Boolean).join(" · "),
       action: "resume-tracked",
       mapping,
@@ -374,7 +379,7 @@ async function showQuickPick(
         await resumeSession(
           store,
           m.sessionId,
-          m.firstPrompt ?? m.sessionId.slice(0, 8),
+          readFirstPrompt(projectPath, m.sessionId) ?? m.sessionId.slice(0, 8),
           projectPath,
           onUpdate,
         );

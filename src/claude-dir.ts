@@ -9,6 +9,14 @@ export function getClaudeDir(): string {
   return path.join(os.homedir(), ".claude");
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Validate that a session ID is a well-formed lowercase UUID */
+export function isValidSessionId(id: string): boolean {
+  return UUID_RE.test(id);
+}
+
 /** Discovered session from history.jsonl */
 export interface DiscoveredSession {
   readonly sessionId: string;
@@ -36,6 +44,7 @@ export function discoverSessions(
 
   for (const entry of entries) {
     if (normalizePath(entry.project) !== normalizedWorkspace) continue;
+    if (!isValidSessionId(entry.sessionId)) continue;
 
     const existing = sessionMap.get(entry.sessionId);
     if (existing) {
@@ -65,33 +74,48 @@ export function discoverSessions(
 
 /**
  * Get session .jsonl file size in bytes.
- * Returns 0 if file not found.
+ * Returns 0 if file not found or if the path is a symbolic link.
  */
 function getSessionFileSize(projectDir: string, sessionId: string): number {
   const filePath = path.join(projectDir, `${sessionId}.jsonl`);
   try {
-    return fs.statSync(filePath).size;
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) return 0;
+    return stat.size;
   } catch {
     return 0;
   }
 }
 
 /**
+ * Return true if the path exists and is NOT a symbolic link.
+ */
+function existsAndNotSymlink(p: string): boolean {
+  try {
+    return !fs.lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Find the project directory under ~/.claude/projects/ matching a workspace path.
  * CLI slug: path.replace(/[^a-zA-Z0-9]/g, "-") — case-sensitive, so we try both.
+ * Directories that are symbolic links are ignored.
  */
-function findProjectDir(workspacePath: string): string | undefined {
+export function findProjectDir(workspacePath: string): string | undefined {
   const projectsDir = path.join(getClaudeDir(), "projects");
-  if (!fs.existsSync(projectsDir)) return undefined;
+  if (!existsAndNotSymlink(projectsDir)) return undefined;
   const slug = workspacePath.replace(/[^a-zA-Z0-9]/g, "-");
   const candidate = path.join(projectsDir, slug);
-  if (fs.existsSync(candidate)) return candidate;
+  if (existsAndNotSymlink(candidate)) return candidate;
   // Case mismatch fallback: scan dirs
   try {
     const normalizedSlug = slug.toLowerCase();
     for (const dir of fs.readdirSync(projectsDir)) {
-      if (dir.toLowerCase() === normalizedSlug) {
-        return path.join(projectsDir, dir);
+      const dirPath = path.join(projectsDir, dir);
+      if (dir.toLowerCase() === normalizedSlug && existsAndNotSymlink(dirPath)) {
+        return dirPath;
       }
     }
   } catch {
@@ -110,6 +134,56 @@ export function lookupSessionFileSize(
   const projectDir = findProjectDir(workspacePath);
   if (!projectDir) return 0;
   return getSessionFileSize(projectDir, sessionId);
+}
+
+/**
+ * Read the first user prompt from a session JSONL file.
+ * Opens read-only, reads only until the first user entry is found.
+ * Returns undefined on any failure (graceful fallback).
+ *
+ * Note: currently reads the full file content. Future optimization:
+ * read only the first N bytes to avoid loading large JSONL files.
+ */
+export function readFirstPrompt(
+  workspacePath: string,
+  sessionId: string,
+): string | undefined {
+  if (!isValidSessionId(sessionId)) return undefined;
+  const projectDir = findProjectDir(workspacePath);
+  if (!projectDir) return undefined;
+  const filePath = path.join(projectDir, `${sessionId}.jsonl`);
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) return undefined;
+    const fd = fs.openSync(filePath, fs.constants.O_RDONLY);
+    try {
+      const content = fs.readFileSync(fd, "utf-8");
+      for (const line of content.split("\n")) {
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line) as { type?: string; message?: { content?: unknown } };
+          if (entry.type === "user" && entry.message?.content) {
+            const text =
+              typeof entry.message.content === "string"
+                ? entry.message.content
+                : Array.isArray(entry.message.content)
+                  ? (entry.message.content as { type: string; text?: string }[]).find(
+                      (c) => c.type === "text",
+                    )?.text ?? ""
+                  : "";
+            return text.slice(0, 80) || undefined;
+          }
+        } catch {
+          // skip malformed line
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 /**
