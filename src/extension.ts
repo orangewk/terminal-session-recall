@@ -146,6 +146,7 @@ async function startNewSession(
   const terminal = vscode.window.createTerminal({
     name,
     cwd: projectPath,
+    isTransient: true,
   });
   terminal.show();
   terminal.sendText(`${getClaudePath()} --session-id ${sessionId}`);
@@ -174,6 +175,7 @@ async function resumeSession(
   const terminal = vscode.window.createTerminal({
     name: terminalName,
     cwd: projectPath,
+    isTransient: true,
   });
   terminal.sendText(`${getClaudePath()} --resume ${sessionId}`);
   terminal.show();
@@ -345,6 +347,7 @@ async function showQuickPick(
       const terminal = vscode.window.createTerminal({
         name: "Claude: continue",
         cwd: projectPath,
+        isTransient: true,
       });
       terminal.sendText(`${getClaudePath()} --continue`);
       terminal.show();
