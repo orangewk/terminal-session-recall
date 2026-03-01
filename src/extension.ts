@@ -205,17 +205,27 @@ async function showQuickPick(
   projectPath: string,
   onUpdate: () => void,
 ): Promise<void> {
-  const config = vscode.workspace.getConfiguration("claudeResurrect");
-  const ttlHours = config.get<number>("autoRestoreMaxAge", 24);
+  const QUICK_PICK_LIMIT = 20;
 
   const activeItems = store.getActive(projectPath);
-  const inactiveItems = store.getRestorable(projectPath, ttlHours);
-  const completedItems = store.getCompleted(projectPath, ttlHours);
+  const allByProject = store.getByProject(projectPath);
+  const inactiveItems = allByProject
+    .filter((m) => m.status === "inactive")
+    .sort((a, b) => b.lastSeen - a.lastSeen);
+  const completedItems = allByProject
+    .filter((m) => m.status === "completed")
+    .sort((a, b) => b.lastSeen - a.lastSeen);
 
   // Discover sessions from history.jsonl that we don't track
   const discovered = discoverSessions(projectPath);
-  const trackedIds = new Set(store.getByProject(projectPath).map((m) => m.sessionId));
+  const trackedIds = new Set(allByProject.map((m) => m.sessionId));
   const untrackedSessions = discovered.filter((d) => !trackedIds.has(d.sessionId));
+
+  // Merge inactive + untracked into resumable, sorted by lastSeen, limited to N
+  const merged = [
+    ...inactiveItems.map((m) => ({ lastSeen: m.lastSeen, kind: "tracked" as const, mapping: m })),
+    ...untrackedSessions.map((d) => ({ lastSeen: d.lastSeen, kind: "discovered" as const, session: d })),
+  ].sort((a, b) => b.lastSeen - a.lastSeen);
 
   interface MenuItem extends vscode.QuickPickItem {
     action: "new" | "continue" | "resume-tracked" | "resume-discovered";
@@ -224,6 +234,23 @@ async function showQuickPick(
   }
 
   const items: MenuItem[] = [];
+
+  // Actions first
+  items.push({
+    label: "Actions",
+    kind: vscode.QuickPickItemKind.Separator,
+    action: "new",
+  });
+  items.push({
+    label: "$(add) New Session",
+    description: "Start a new Claude CLI session",
+    action: "new",
+  });
+  items.push({
+    label: "$(debug-continue) Continue Last",
+    description: "Resume the most recent session (claude --continue)",
+    action: "continue",
+  });
 
   // Active section
   if (activeItems.length > 0) {
@@ -244,65 +271,59 @@ async function showQuickPick(
     }
   }
 
-  // Resumable section (inactive tracked + untracked from history.jsonl)
-  const hasResumable = inactiveItems.length > 0 || untrackedSessions.length > 0;
-  if (hasResumable) {
+  // Resumable section (inactive tracked + untracked, merged and limited)
+  let remaining = QUICK_PICK_LIMIT;
+  const resumableMenuItems: MenuItem[] = [];
+  for (const entry of merged) {
+    if (remaining <= 0) break;
+    if (entry.kind === "tracked") {
+      resumableMenuItems.push({
+        label: `$(circle-outline) ${entry.mapping.firstPrompt ?? entry.mapping.sessionId.slice(0, 8)}`,
+        description: formatAge(entry.mapping.lastSeen),
+        action: "resume-tracked",
+        mapping: entry.mapping,
+      });
+    } else {
+      resumableMenuItems.push({
+        label: `$(circle-outline) ${entry.session.firstPrompt.slice(0, 40)}`,
+        description: formatAge(entry.session.lastSeen),
+        action: "resume-discovered",
+        discovered: entry.session,
+      });
+    }
+    remaining--;
+  }
+
+  if (resumableMenuItems.length > 0) {
     items.push({
       label: "Resumable",
       kind: vscode.QuickPickItemKind.Separator,
       action: "new",
     });
-    for (const mapping of inactiveItems) {
-      items.push({
-        label: `$(circle-outline) ${mapping.firstPrompt ?? mapping.sessionId.slice(0, 8)}`,
-        description: formatAge(mapping.lastSeen),
-        action: "resume-tracked",
-        mapping,
-      });
-    }
-    for (const session of untrackedSessions) {
-      items.push({
-        label: `$(circle-outline) ${session.firstPrompt.slice(0, 40)}`,
-        description: formatAge(session.lastSeen),
-        action: "resume-discovered",
-        discovered: session,
-      });
-    }
+    items.push(...resumableMenuItems);
   }
 
-  // Completed section
-  if (completedItems.length > 0) {
+  // Completed section (limited to remaining slots)
+  const completedMenuItems: MenuItem[] = [];
+  for (const mapping of completedItems) {
+    if (remaining <= 0) break;
+    completedMenuItems.push({
+      label: `$(check) ${mapping.firstPrompt ?? mapping.sessionId.slice(0, 8)}`,
+      description: formatAge(mapping.lastSeen),
+      action: "resume-tracked",
+      mapping,
+    });
+    remaining--;
+  }
+
+  if (completedMenuItems.length > 0) {
     items.push({
       label: "Completed",
       kind: vscode.QuickPickItemKind.Separator,
       action: "new",
     });
-    for (const mapping of completedItems) {
-      items.push({
-        label: `$(check) ${mapping.firstPrompt ?? mapping.sessionId.slice(0, 8)}`,
-        description: formatAge(mapping.lastSeen),
-        action: "resume-tracked",
-        mapping,
-      });
-    }
+    items.push(...completedMenuItems);
   }
-
-  // Actions section
-  items.push({
-    label: "Actions",
-    kind: vscode.QuickPickItemKind.Separator,
-    action: "new",
-  });
-  items.push({
-    label: "$(add) New Session",
-    description: "Start a new Claude CLI session",
-    action: "new",
-  });
-  items.push({
-    label: "$(debug-continue) Continue Last",
-    description: "Resume the most recent session (claude --continue)",
-    action: "continue",
-  });
 
   const selected = await vscode.window.showQuickPick(items, {
     placeHolder: "Claude Resurrect",
