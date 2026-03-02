@@ -1,20 +1,29 @@
 {
-  "name": "claude-resurrect",
-  "displayName": "Claude Resurrect",
+  "name": "terminal-session-recall",
+  "displayName": "Terminal Session Recall",
   "description": "Automatically resume Claude Code CLI sessions after VSCode restart",
   "version": "0.1.0",
-  "publisher": "orangewk",
+  "publisher": "orange-creatives",
   "license": "MIT",
   "icon": "art/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/orangewk/claude-resurrect"
+    "url": "https://github.com/orangewk/terminal-session-recall"
   },
   "engines": {
     "vscode": "^1.96.0"
   },
   "categories": [
     "AI"
+  ],
+  "keywords": [
+    "claude",
+    "terminal",
+    "session",
+    "restore",
+    "resume",
+    "ai",
+    "cli"
   ],
   "activationEvents": [
     "onStartupFinished"
