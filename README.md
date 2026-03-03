@@ -24,6 +24,7 @@
 
 ## Limitations
 
+- **Only sessions started through this extension are fully tracked.** The status bar "live" count and auto-restore only cover sessions launched via the QuickPick menu or auto-restore. Sessions started manually in a terminal (e.g., `claude` or `claude --resume`) are not tracked as "live" — they may appear as idle in the session list even while running.
 - **This extension does not manage session data.** It only reads what Claude CLI creates. Sessions with no conversation (e.g., opened and immediately closed) are excluded from the session list, but cannot be deleted by this extension.
 - **Read-only by design.** Deleting or modifying `~/.claude/` data is out of scope. Use Claude CLI directly to manage session history.
 
@@ -77,6 +78,7 @@ This extension does NOT:
 
 ### 制限事項
 
+- **追跡できるのは、この拡張経由で起動したセッションのみ。** ステータスバーの "live" カウントや自動復元は、QuickPick メニューまたは自動復元で起動したセッションだけが対象。ターミナルで手動起動した `claude` セッションは "live" として追跡されないため、実行中でも idle として一覧に表示されることがある。
 - **セッションデータの管理は行わない。** CLI が作成したデータを読み取るだけ。会話が発生していないセッションは一覧に表示されない。
 - **読み取り専用。** `~/.claude/` への書き込み・削除は行わない。セッション履歴の管理は Claude CLI 側で行う。
 
