@@ -31,8 +31,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const idle = tracked.filter((m) => m.status !== "active" && m.status !== "completed").length
       + untracked.length;
 
-    statusBar.text = `$(terminal) Claude: ${live} live · ${idle} idle`;
-    statusBar.tooltip = "Claude Resurrect — Click to manage sessions";
+    statusBar.text = `$(terminal) TS Recall: ${live} live · ${idle} idle`;
+    statusBar.tooltip = "Terminal Session Recall — this extension only tracks sessions it launched";
     statusBar.show();
   };
 
