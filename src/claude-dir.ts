@@ -17,10 +17,17 @@ export function isValidSessionId(id: string): boolean {
   return UUID_RE.test(id);
 }
 
+/** Display info extracted from a session JSONL file */
+export interface SessionDisplayInfo {
+  readonly customTitle: string | undefined;
+  readonly firstPrompt: string | undefined;
+}
+
 /** Discovered session from history.jsonl */
 export interface DiscoveredSession {
   readonly sessionId: string;
   readonly firstPrompt: string;
+  readonly customTitle: string | undefined;
   readonly lastSeen: number; // Unix ms timestamp
   readonly fileSize: number; // bytes, 0 if file not found
 }
@@ -66,7 +73,8 @@ export function discoverSessions(
   const sessions: DiscoveredSession[] = [];
   for (const [sessionId, data] of sessionMap) {
     const fileSize = projectDir ? getSessionFileSize(projectDir, sessionId) : 0;
-    sessions.push({ sessionId, ...data, fileSize });
+    const displayInfo = readSessionDisplayInfo(workspacePath, sessionId);
+    sessions.push({ sessionId, ...data, customTitle: displayInfo.customTitle, fileSize });
   }
 
   return sessions.sort((a, b) => b.lastSeen - a.lastSeen);
@@ -137,53 +145,88 @@ export function lookupSessionFileSize(
 }
 
 /**
+ * Read display info (customTitle + firstPrompt) from a session JSONL file.
+ * Scans the entire file once to find:
+ * - The last `type: "custom-title"` entry (most recent rename)
+ * - The first `type: "user"` message text
+ */
+export function readSessionDisplayInfo(
+  workspacePath: string,
+  sessionId: string,
+): SessionDisplayInfo {
+  const empty: SessionDisplayInfo = { customTitle: undefined, firstPrompt: undefined };
+  if (!isValidSessionId(sessionId)) return empty;
+  const projectDir = findProjectDir(workspacePath);
+  if (!projectDir) return empty;
+  const filePath = path.join(projectDir, `${sessionId}.jsonl`);
+  try {
+    const stat = fs.lstatSync(filePath);
+    if (stat.isSymbolicLink()) return empty;
+    const fd = fs.openSync(filePath, fs.constants.O_RDONLY);
+    try {
+      const content = fs.readFileSync(fd, "utf-8");
+      return parseSessionDisplayInfo(content);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return empty;
+  }
+}
+
+/** Parse JSONL content to extract customTitle and firstPrompt */
+export function parseSessionDisplayInfo(content: string): SessionDisplayInfo {
+  let customTitle: string | undefined;
+  let firstPrompt: string | undefined;
+
+  for (const line of content.split("\n")) {
+    if (!line) continue;
+    try {
+      const entry = JSON.parse(line) as {
+        type?: string;
+        customTitle?: string;
+        message?: { content?: unknown };
+      };
+      if (entry.type === "custom-title" && typeof entry.customTitle === "string") {
+        customTitle = entry.customTitle;
+      }
+      if (!firstPrompt && entry.type === "user" && entry.message?.content) {
+        const text =
+          typeof entry.message.content === "string"
+            ? entry.message.content
+            : Array.isArray(entry.message.content)
+              ? (entry.message.content as { type: string; text?: string }[]).find(
+                  (c) => c.type === "text",
+                )?.text ?? ""
+              : "";
+        const trimmed = text.slice(0, 80);
+        if (trimmed) firstPrompt = trimmed;
+      }
+    } catch {
+      // skip malformed line
+    }
+  }
+
+  return { customTitle, firstPrompt };
+}
+
+/** Resolve display name with priority: customTitle > firstPrompt > short sessionId */
+export function resolveDisplayName(
+  info: SessionDisplayInfo,
+  sessionId: string,
+): string {
+  return info.customTitle ?? info.firstPrompt ?? sessionId.slice(0, 8);
+}
+
+/**
  * Read the first user prompt from a session JSONL file.
- * Opens read-only, reads only until the first user entry is found.
- * Returns undefined on any failure (graceful fallback).
- *
- * Note: currently reads the full file content. Future optimization:
- * read only the first N bytes to avoid loading large JSONL files.
+ * @deprecated Use readSessionDisplayInfo() + resolveDisplayName() instead.
  */
 export function readFirstPrompt(
   workspacePath: string,
   sessionId: string,
 ): string | undefined {
-  if (!isValidSessionId(sessionId)) return undefined;
-  const projectDir = findProjectDir(workspacePath);
-  if (!projectDir) return undefined;
-  const filePath = path.join(projectDir, `${sessionId}.jsonl`);
-  try {
-    const stat = fs.lstatSync(filePath);
-    if (stat.isSymbolicLink()) return undefined;
-    const fd = fs.openSync(filePath, fs.constants.O_RDONLY);
-    try {
-      const content = fs.readFileSync(fd, "utf-8");
-      for (const line of content.split("\n")) {
-        if (!line) continue;
-        try {
-          const entry = JSON.parse(line) as { type?: string; message?: { content?: unknown } };
-          if (entry.type === "user" && entry.message?.content) {
-            const text =
-              typeof entry.message.content === "string"
-                ? entry.message.content
-                : Array.isArray(entry.message.content)
-                  ? (entry.message.content as { type: string; text?: string }[]).find(
-                      (c) => c.type === "text",
-                    )?.text ?? ""
-                  : "";
-            return text.slice(0, 80) || undefined;
-          }
-        } catch {
-          // skip malformed line
-        }
-      }
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return undefined;
-  }
-  return undefined;
+  return readSessionDisplayInfo(workspacePath, sessionId).firstPrompt;
 }
 
 /**

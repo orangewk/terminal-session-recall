@@ -8,7 +8,7 @@ vi.mock("node:os", () => ({
   homedir: vi.fn(() => "/home/testuser"),
 }));
 
-import { discoverSessions, isValidSessionId, readHistoryEntries, getClaudeDir, readFirstPrompt } from "./claude-dir";
+import { discoverSessions, isValidSessionId, readHistoryEntries, getClaudeDir, readFirstPrompt, parseSessionDisplayInfo, resolveDisplayName } from "./claude-dir";
 
 /** Build a Stats-like mock for a regular file/directory (not a symlink) */
 function makeStatsMock(size = 0): fs.Stats {
@@ -382,5 +382,100 @@ describe("isValidSessionId", () => {
 
   it("rejects a plain alphanumeric string (no hyphens)", () => {
     expect(isValidSessionId("550e8400e29b41d4a716446655440000")).toBe(false);
+  });
+});
+
+describe("parseSessionDisplayInfo", () => {
+  it("extracts customTitle from a single custom-title entry", () => {
+    const content = [
+      JSON.stringify({ type: "user", message: { content: "hello" } }),
+      JSON.stringify({ type: "custom-title", customTitle: "my session", sessionId: UUID_A }),
+    ].join("\n");
+
+    const info = parseSessionDisplayInfo(content);
+    expect(info.customTitle).toBe("my session");
+    expect(info.firstPrompt).toBe("hello");
+  });
+
+  it("uses the last custom-title when multiple exist", () => {
+    const content = [
+      JSON.stringify({ type: "custom-title", customTitle: "first name", sessionId: UUID_A }),
+      JSON.stringify({ type: "user", message: { content: "hello" } }),
+      JSON.stringify({ type: "custom-title", customTitle: "renamed", sessionId: UUID_A }),
+    ].join("\n");
+
+    const info = parseSessionDisplayInfo(content);
+    expect(info.customTitle).toBe("renamed");
+  });
+
+  it("returns undefined customTitle when no custom-title entry exists", () => {
+    const content = [
+      JSON.stringify({ type: "user", message: { content: "hello" } }),
+      JSON.stringify({ type: "assistant", message: { content: "hi" } }),
+    ].join("\n");
+
+    const info = parseSessionDisplayInfo(content);
+    expect(info.customTitle).toBeUndefined();
+    expect(info.firstPrompt).toBe("hello");
+  });
+
+  it("returns both undefined when file has no relevant entries", () => {
+    const content = [
+      JSON.stringify({ type: "system", message: { content: "system msg" } }),
+    ].join("\n");
+
+    const info = parseSessionDisplayInfo(content);
+    expect(info.customTitle).toBeUndefined();
+    expect(info.firstPrompt).toBeUndefined();
+  });
+
+  it("handles empty content", () => {
+    const info = parseSessionDisplayInfo("");
+    expect(info.customTitle).toBeUndefined();
+    expect(info.firstPrompt).toBeUndefined();
+  });
+
+  it("ignores custom-title with non-string customTitle", () => {
+    const content = [
+      JSON.stringify({ type: "custom-title", customTitle: 123, sessionId: UUID_A }),
+      JSON.stringify({ type: "user", message: { content: "hello" } }),
+    ].join("\n");
+
+    const info = parseSessionDisplayInfo(content);
+    expect(info.customTitle).toBeUndefined();
+    expect(info.firstPrompt).toBe("hello");
+  });
+
+  it("skips malformed lines and continues", () => {
+    const content = [
+      "not json {{{",
+      JSON.stringify({ type: "custom-title", customTitle: "good title", sessionId: UUID_A }),
+    ].join("\n");
+
+    const info = parseSessionDisplayInfo(content);
+    expect(info.customTitle).toBe("good title");
+  });
+});
+
+describe("resolveDisplayName", () => {
+  it("prefers customTitle over firstPrompt", () => {
+    expect(resolveDisplayName(
+      { customTitle: "my title", firstPrompt: "hello world" },
+      UUID_A,
+    )).toBe("my title");
+  });
+
+  it("falls back to firstPrompt when no customTitle", () => {
+    expect(resolveDisplayName(
+      { customTitle: undefined, firstPrompt: "hello world" },
+      UUID_A,
+    )).toBe("hello world");
+  });
+
+  it("falls back to short sessionId when both are undefined", () => {
+    expect(resolveDisplayName(
+      { customTitle: undefined, firstPrompt: undefined },
+      UUID_A,
+    )).toBe("aaaaaaaa");
   });
 });

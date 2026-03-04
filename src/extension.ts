@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as crypto from "node:crypto";
 import { SessionStore } from "./session-store";
-import { discoverSessions, isValidSessionId, lookupSessionFileSize, readFirstPrompt } from "./claude-dir";
+import { discoverSessions, isValidSessionId, lookupSessionFileSize, readSessionDisplayInfo, resolveDisplayName } from "./claude-dir";
 import type { SessionMapping } from "./types";
 import type { DiscoveredSession } from "./claude-dir";
 
@@ -206,8 +206,8 @@ async function autoRestoreSessions(
   const skipped = active.length - toRestore.length;
 
   for (const mapping of toRestore) {
-    const displayName =
-      readFirstPrompt(projectPath, mapping.sessionId) ?? mapping.sessionId.slice(0, 8);
+    const info = readSessionDisplayInfo(projectPath, mapping.sessionId);
+    const displayName = resolveDisplayName(info, mapping.sessionId);
     await resumeSession(store, mapping.sessionId, displayName, projectPath, onUpdate);
   }
 
@@ -285,11 +285,12 @@ async function showQuickPick(
     });
     for (const mapping of activeItems) {
       const size = formatSize(lookupSessionFileSize(projectPath, mapping.sessionId));
-      const activePrompt = readFirstPrompt(projectPath, mapping.sessionId);
+      const activeInfo = readSessionDisplayInfo(projectPath, mapping.sessionId);
+      const activeDisplay = activeInfo.customTitle ?? activeInfo.firstPrompt;
       items.push({
         label: `$(circle-filled) ${mapping.terminalName}`,
         description: [
-          activePrompt ? `"${activePrompt.slice(0, 40)}"` : mapping.sessionId.slice(0, 8),
+          activeDisplay ? `"${activeDisplay.slice(0, 40)}"` : mapping.sessionId.slice(0, 8),
           size,
           formatAge(mapping.lastSeen),
         ].filter(Boolean).join(" · "),
@@ -306,18 +307,19 @@ async function showQuickPick(
     if (remaining <= 0) break;
     if (entry.kind === "tracked") {
       const size = formatSize(lookupSessionFileSize(projectPath, entry.mapping.sessionId));
-      const trackedPrompt =
-        readFirstPrompt(projectPath, entry.mapping.sessionId) ?? entry.mapping.sessionId.slice(0, 8);
+      const trackedInfo = readSessionDisplayInfo(projectPath, entry.mapping.sessionId);
+      const trackedDisplay = resolveDisplayName(trackedInfo, entry.mapping.sessionId);
       resumableMenuItems.push({
-        label: `$(circle-outline) ${trackedPrompt}`,
+        label: `$(circle-outline) ${trackedDisplay}`,
         description: [size, formatAge(entry.mapping.lastSeen)].filter(Boolean).join(" · "),
         action: "resume-tracked",
         mapping: entry.mapping,
       });
     } else {
       const size = formatSize(entry.session.fileSize);
+      const discoveredDisplay = entry.session.customTitle ?? entry.session.firstPrompt.slice(0, 40);
       resumableMenuItems.push({
-        label: `$(circle-outline) ${entry.session.firstPrompt.slice(0, 40)}`,
+        label: `$(circle-outline) ${discoveredDisplay}`,
         description: [size, formatAge(entry.session.lastSeen)].filter(Boolean).join(" · "),
         action: "resume-discovered",
         discovered: entry.session,
@@ -340,10 +342,10 @@ async function showQuickPick(
   for (const mapping of completedItems) {
     if (remaining <= 0) break;
     const size = formatSize(lookupSessionFileSize(projectPath, mapping.sessionId));
-    const completedPrompt =
-      readFirstPrompt(projectPath, mapping.sessionId) ?? mapping.sessionId.slice(0, 8);
+    const completedInfo = readSessionDisplayInfo(projectPath, mapping.sessionId);
+    const completedDisplay = resolveDisplayName(completedInfo, mapping.sessionId);
     completedMenuItems.push({
-      label: `$(check) ${completedPrompt}`,
+      label: `$(check) ${completedDisplay}`,
       description: [size, formatAge(mapping.lastSeen)].filter(Boolean).join(" · "),
       action: "resume-tracked",
       mapping,
@@ -383,10 +385,11 @@ async function showQuickPick(
     case "resume-tracked":
       if (selected.mapping) {
         const m = selected.mapping;
+        const resumeInfo = readSessionDisplayInfo(projectPath, m.sessionId);
         await resumeSession(
           store,
           m.sessionId,
-          readFirstPrompt(projectPath, m.sessionId) ?? m.sessionId.slice(0, 8),
+          resolveDisplayName(resumeInfo, m.sessionId),
           projectPath,
           onUpdate,
         );
@@ -395,7 +398,8 @@ async function showQuickPick(
     case "resume-discovered":
       if (selected.discovered) {
         const d = selected.discovered;
-        await resumeSession(store, d.sessionId, d.firstPrompt, projectPath, onUpdate);
+        const displayName = d.customTitle ?? d.firstPrompt;
+        await resumeSession(store, d.sessionId, displayName, projectPath, onUpdate);
       }
       break;
   }
