@@ -252,7 +252,7 @@ async function showQuickPick(
   ].sort((a, b) => b.lastSeen - a.lastSeen);
 
   interface MenuItem extends vscode.QuickPickItem {
-    action: "new" | "continue" | "resume-tracked" | "resume-discovered";
+    action: "new" | "continue" | "focus" | "resume-tracked" | "resume-discovered";
     mapping?: SessionMapping;
     discovered?: DiscoveredSession;
   }
@@ -288,13 +288,14 @@ async function showQuickPick(
       const activeInfo = readSessionDisplayInfo(projectPath, mapping.sessionId);
       const activeDisplay = activeInfo.customTitle ?? activeInfo.firstPrompt;
       items.push({
-        label: `$(circle-filled) ${mapping.terminalName}`,
+        label: `$(terminal) ${mapping.terminalName}`,
         description: [
           activeDisplay ? `"${activeDisplay.slice(0, 40)}"` : mapping.sessionId.slice(0, 8),
           size,
           formatAge(mapping.lastSeen),
+          "$(arrow-right)",
         ].filter(Boolean).join(" · "),
-        action: "resume-tracked",
+        action: "focus",
         mapping,
       });
     }
@@ -382,6 +383,20 @@ async function showQuickPick(
       terminal.show();
       break;
     }
+    case "focus":
+      if (selected.mapping) {
+        const target = vscode.window.terminals.find(
+          (t) => t.name === selected.mapping!.terminalName,
+        );
+        if (target) {
+          target.show();
+        } else {
+          vscode.window.showWarningMessage(
+            `Terminal Session Recall: Terminal "${selected.mapping.terminalName}" not found. It may have been closed.`,
+          );
+        }
+      }
+      break;
     case "resume-tracked":
       if (selected.mapping) {
         const m = selected.mapping;
