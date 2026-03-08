@@ -44,6 +44,23 @@ export function activate(context: vscode.ExtensionContext): void {
       await showQuickPick(store, projectPath, updateStatusBar);
     }),
 
+    vscode.commands.registerCommand("claudeResurrect.dumpState", () => {
+      const channel = vscode.window.createOutputChannel("TS Recall Debug");
+      const all = store.getAll();
+      channel.appendLine(`=== TS Recall State Dump (${new Date().toISOString()}) ===`);
+      channel.appendLine(`Total mappings: ${all.length}`);
+      channel.appendLine("");
+      for (const m of all) {
+        channel.appendLine(`  ${m.status.padEnd(10)} ${m.terminalName}`);
+        channel.appendLine(`             session: ${m.sessionId.slice(0, 8)}…`);
+        channel.appendLine(`             project: ${m.projectPath}`);
+        channel.appendLine(`             pid: ${m.pid ?? "N/A"}  pidCreatedAt: ${m.pidCreatedAt ? new Date(m.pidCreatedAt).toLocaleString() : "N/A"}`);
+        channel.appendLine(`             lastSeen: ${new Date(m.lastSeen).toLocaleString()}`);
+        channel.appendLine("");
+      }
+      channel.show();
+    }),
+
     vscode.commands.registerCommand("claudeResurrect.newSession", async () => {
       if (!projectPath) {
         vscode.window.showWarningMessage(

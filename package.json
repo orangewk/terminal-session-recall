@@ -38,6 +38,10 @@
       {
         "command": "claudeResurrect.showMenu",
         "title": "Claude Resurrect: Show Menu"
+      },
+      {
+        "command": "claudeResurrect.dumpState",
+        "title": "Claude Resurrect: Dump State (Debug)"
       }
     ],
     "configuration": {
