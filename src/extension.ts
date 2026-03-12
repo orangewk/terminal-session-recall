@@ -109,13 +109,16 @@ export function activate(context: vscode.ExtensionContext): void {
     // 14日（336時間）超過のマッピングを globalState から削除
     void store.pruneExpired(336);
 
-    // Prune sessions whose OS process has died, then auto-restore
-    void store.pruneDeadProcesses(path).then(() => {
-      updateStatusBar();
-      if (autoRestore) {
-        void autoRestoreSessions(store, path, updateStatusBar, terminalSessionMap);
-      }
-    });
+    // autoRestore を先に実行し、その後に dead process をクリーンアップ
+    const afterRestore = autoRestore
+      ? autoRestoreSessions(store, path, updateStatusBar, terminalSessionMap)
+      : Promise.resolve();
+
+    void afterRestore.then(() =>
+      store.pruneDeadProcesses(path).then(() => {
+        updateStatusBar();
+      })
+    );
   };
 
   if (projectPath) {
