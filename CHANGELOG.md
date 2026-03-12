@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4
+
+- Fix: Full Close → Restart 後に autoRestore が動作しない問題を修正（pruneDeadProcesses との実行順序を修正）
+
 ## 1.0.3
 
 - Fix: Windows 11 でゾンビセッションが残り続ける問題を修正（`wmic` → PowerShell に差し替え）
