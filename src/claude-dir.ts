@@ -84,8 +84,9 @@ export function discoverSessions(
     if (fileSize === 0) {
       console.log(`[TS Recall]   ${sessionId.slice(0, 8)} fileSize=0 projectPath=${data.projectPath} projectDir=${sessionProjectDir ?? "NOT_FOUND"}`);
     }
-    const displayInfo = readSessionDisplayInfo(data.projectPath, sessionId);
-    sessions.push({ sessionId, ...data, customTitle: displayInfo.customTitle, fileSize });
+    // Note: customTitle is NOT loaded here to avoid expensive per-file JSONL parsing.
+    // Callers should call readSessionDisplayInfo() lazily for displayed items only.
+    sessions.push({ sessionId, ...data, customTitle: undefined, fileSize });
   }
 
   const withFile = sessions.filter(s => s.fileSize > 0).length;

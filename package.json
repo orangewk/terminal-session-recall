@@ -92,6 +92,11 @@
           "scope": "window",
           "description": "Shell command template for running Claude as a different user. Placeholders: {cmd} = claude command, {cwd} = working directory, {user} = userName. Only used when userName is set. Leave empty to run commands directly."
         },
+        "claudeResurrect.maxQuickPickSessions": {
+          "type": "number",
+          "default": 10,
+          "description": "Maximum number of resumable/completed sessions shown in the QuickPick menu. Lower values improve QuickPick responsiveness."
+        },
         "claudeResurrect.sessionPresets": {
           "type": "array",
           "default": [],

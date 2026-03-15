@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { SessionStore } from "./session-store";
 import { discoverSessions, isValidSessionId, lookupSessionFileSize, readSessionDisplayInfo, resolveDisplayName } from "./claude-dir";
 import { normalizePath } from "./normalize-path";
+import { detectClaudeSession } from "./process-inspector";
 import type { SessionMapping, SessionPreset } from "./types";
 import type { DiscoveredSession } from "./claude-dir";
 import { openPresetsPanel } from "./preset-webview";
@@ -140,11 +141,46 @@ export function activate(context: vscode.ExtensionContext): void {
       statusBar.hide();
       return;
     }
-    const all = store.getAll();
-    const live = all.filter((m) => m.status === "active").length;
+    const byProject = store.getByProject(projectPath);
+    const active = byProject.filter((m) => m.status === "active");
+    const inactive = byProject.filter((m) => m.status === "inactive");
 
-    statusBar.text = `$(terminal) TS Recall: ${live} live`;
-    statusBar.tooltip = "Terminal Session Recall — this extension only tracks sessions it launched";
+    // Verify active entries have a matching open terminal
+    const openTerminalNames = new Set(vscode.window.terminals.map((t) => t.name));
+    const liveActive = active.filter((m) => openTerminalNames.has(m.terminalName));
+    const staleActive = active.filter((m) => !openTerminalNames.has(m.terminalName));
+
+    if (staleActive.length > 0) {
+      log(`[status-bar] ${staleActive.length} stale active entries (no matching terminal): ${staleActive.map(m => `"${m.terminalName}"(${m.sessionId.slice(0, 8)})`).join(", ")}`);
+      // Mark stale actives as inactive
+      for (const m of staleActive) {
+        log(`[status-bar] marking stale active "${m.terminalName}" (${m.sessionId.slice(0, 8)}) as inactive`);
+        void store.markInactive(m.terminalName, m.projectPath);
+      }
+    }
+
+    log(`[status-bar] project=${projectPath} active=${liveActive.length} staleActive=${staleActive.length} inactive=${inactive.length} openTerminals=[${[...openTerminalNames].join(", ")}]`);
+
+    statusBar.text = `$(terminal) TS Recall: ${liveActive.length} live`;
+
+    const tooltip = new vscode.MarkdownString("", true);
+    tooltip.isTrusted = true;
+    tooltip.supportHtml = true;
+
+    tooltip.appendMarkdown(`**Terminal Session Recall: ${liveActive.length} live**\n\n`);
+
+    if (liveActive.length > 0) {
+      tooltip.appendMarkdown("---\n\n");
+      for (const m of liveActive) {
+        tooltip.appendMarkdown(`$(terminal) \`${m.terminalName}\` — ${m.sessionId.slice(0, 8)}\n\n`);
+      }
+    }
+
+    if (inactive.length > 0) {
+      tooltip.appendMarkdown(`*${inactive.length} inactive (resumable)*\n\n`);
+    }
+
+    statusBar.tooltip = tooltip;
     statusBar.show();
   };
 
@@ -232,6 +268,54 @@ export function activate(context: vscode.ExtensionContext): void {
       });
       if (!selectedTerminal) return;
 
+      // Try process inspection first (Linux: procfs-based)
+      const terminalPid = await selectedTerminal.terminal.processId;
+      if (terminalPid) {
+        log(`[adopt] terminal PID=${terminalPid}, attempting process inspection`);
+        const detected = detectClaudeSession(terminalPid);
+        if (detected) {
+          log(`[adopt] process inspector found session=${detected.sessionId.slice(0, 8)} cwd=${detected.cwd} user=${detected.userName ?? "N/A"} args=${detected.args.join(" ")}`);
+          const allTrackedIds = new Set(store.getByProject(projectPath).map((m) => m.sessionId));
+          if (!allTrackedIds.has(detected.sessionId)) {
+            // Check for duplicate preset
+            const existingPresets = getSessionPresets();
+            if (existingPresets.some((p) => p.sessionId === detected.sessionId)) {
+              log(`[adopt] DUPLICATE — preset with this sessionId already exists, aborting`);
+              vscode.window.showWarningMessage(
+                `A preset with session ${detected.sessionId.slice(0, 8)} already exists. Use "Manage Presets" to modify it.`,
+              );
+              return;
+            }
+
+            const effectiveCwd = detected.cwd;
+            await adoptTerminal(store, selectedTerminal.terminal, detected.sessionId, effectiveCwd);
+            log(`[adopt] auto-adopted via process inspection`);
+
+            const newPreset: SessionPreset = {
+              label: selectedTerminal.terminal.name,
+              cwd: effectiveCwd,
+              sessionId: detected.sessionId,
+              args: detected.args as string[],
+              terminalName: selectedTerminal.terminal.name,
+              autoLaunch: false,
+              ...(detected.userName ? { userName: detected.userName } : {}),
+            };
+            const presets = getSessionPresets();
+            await vscode.workspace.getConfiguration("claudeResurrect")
+              .update("sessionPresets", [...presets, newPreset], vscode.ConfigurationTarget.Workspace);
+            log(`[adopt] preset created via process inspection (user=${detected.userName ?? "none"}, args=${detected.args.length})`);
+
+            vscode.window.showInformationMessage(
+              `Adopted session ${detected.sessionId.slice(0, 8)} (detected from process)`,
+            );
+            return;
+          }
+          log(`[adopt] detected session ${detected.sessionId.slice(0, 8)} is already tracked, falling through`);
+        } else {
+          log(`[adopt] process inspector returned nothing, falling back to session discovery`);
+        }
+      }
+
       // Find candidate sessions from history.jsonl
       const discovered = discoverSessions(projectPath);
       log(`[adopt] discoverSessions returned ${discovered.length} sessions`);
@@ -298,7 +382,8 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         const sessionItems: SessionItem[] = candidates.slice(0, 20).map((d) => {
-          const display = d.customTitle ?? d.firstPrompt.slice(0, 40);
+          const info = readSessionDisplayInfo(d.projectPath, d.sessionId);
+          const display = info.customTitle ?? d.firstPrompt.slice(0, 40);
           return {
             label: display,
             description: `${d.sessionId.slice(0, 8)} · ${formatSize(d.fileSize)} · ${formatAge(d.lastSeen)}`,
@@ -391,14 +476,75 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // --- Terminal lifecycle tracking ---
+
+  // Track terminal names for rename detection
+  const terminalNameCache = new Map<vscode.Terminal, string>();
+  for (const t of vscode.window.terminals) {
+    terminalNameCache.set(t, t.name);
+  }
+
+  // Poll for terminal renames every 2 seconds (VS Code has no onDidRenameTerminal event)
+  const RENAME_POLL_MS = 2000;
+  const renamePollInterval = setInterval(() => {
+    if (!projectPath) return;
+    for (const [terminal, oldName] of terminalNameCache) {
+      if (terminal.name !== oldName) {
+        log(`[rename-poll] detected rename: "${oldName}" → "${terminal.name}"`);
+        terminalNameCache.set(terminal, terminal.name);
+
+        // Search ALL active mappings (not just current project — presets may use different cwd)
+        const allMappings = store.getAll();
+        const mapping = allMappings.find((m) => m.status === "active" && m.terminalName === oldName);
+        if (mapping) {
+          log(`[rename-poll] found mapping: session=${mapping.sessionId.slice(0, 8)} project=${mapping.projectPath}`);
+          void store.upsert({ ...mapping, terminalName: terminal.name }).then(() => {
+            log(`[rename-poll] store updated OK: "${oldName}" → "${terminal.name}"`);
+            updateStatusBar();
+          });
+
+          const presets = getSessionPresets();
+          let idx = presets.findIndex((p) => p.sessionId === mapping.sessionId);
+          if (idx < 0) {
+            // Fallback: match by terminalName or label (for presets without sessionId)
+            idx = presets.findIndex((p) => p.terminalName === oldName || p.label === oldName);
+            if (idx >= 0) {
+              log(`[rename-poll] preset[${idx}] matched by terminalName/label fallback (not by sessionId)`);
+            }
+          }
+          if (idx >= 0) {
+            const updated = [...presets];
+            updated[idx] = { ...updated[idx], terminalName: terminal.name, label: terminal.name };
+            void vscode.workspace.getConfiguration("claudeResurrect")
+              .update("sessionPresets", updated, vscode.ConfigurationTarget.Workspace);
+            log(`[rename-poll] preset[${idx}] updated: label+terminalName → "${terminal.name}"`);
+          } else {
+            log(`[rename-poll] no preset found for session ${mapping.sessionId.slice(0, 8)} by sessionId or name "${oldName}" (${presets.length} presets checked)`);
+          }
+        } else {
+          log(`[rename-poll] no active mapping found for terminal "${oldName}" (${allMappings.filter(m => m.status === "active").length} active mappings total)`);
+        }
+      }
+    }
+  }, RENAME_POLL_MS);
+  context.subscriptions.push({ dispose: () => clearInterval(renamePollInterval) });
+
   context.subscriptions.push(
+    vscode.window.onDidOpenTerminal((terminal) => {
+      log(`[terminal-open] "${terminal.name}" added to rename cache (cache size: ${terminalNameCache.size + 1})`);
+      terminalNameCache.set(terminal, terminal.name);
+    }),
+
     vscode.window.onDidCloseTerminal((terminal) => {
+      log(`[terminal-close] "${terminal.name}" exitReason=${terminal.exitStatus?.reason} exitCode=${terminal.exitStatus?.code}`);
+      terminalNameCache.delete(terminal);
       if (!projectPath) return;
 
       const reason = terminal.exitStatus?.reason;
       if (reason === vscode.TerminalExitReason.Process) {
+        log(`[terminal-close] marking "${terminal.name}" as completed (process exit)`);
         void store.markCompleted(terminal.name, projectPath);
       } else {
+        log(`[terminal-close] marking "${terminal.name}" as inactive (reason: ${reason})`);
         void store.markInactive(terminal.name, projectPath);
       }
       updateStatusBar();
@@ -410,9 +556,17 @@ export function activate(context: vscode.ExtensionContext): void {
     const config = vscode.workspace.getConfiguration("claudeResurrect");
     const autoRestore = config.get<boolean>("autoRestore", true);
 
-    void store.pruneExpired(336);
+    const allBefore = store.getAll();
+    log(`[init] project=${path} totalMappings=${allBefore.length} active=${allBefore.filter(m => m.status === "active").length} inactive=${allBefore.filter(m => m.status === "inactive").length} completed=${allBefore.filter(m => m.status === "completed").length}`);
 
-    void store.pruneDeadProcesses(path).then(() => {
+    void store.pruneExpired(336).then((expiredCount) => {
+      log(`[init] pruneExpired(336h): removed ${expiredCount} entries`);
+    });
+
+    void store.pruneDeadProcesses(path).then((deadCount) => {
+      log(`[init] pruneDeadProcesses: marked ${deadCount} dead processes as inactive`);
+      const allAfter = store.getAll();
+      log(`[init] after prune: totalMappings=${allAfter.length} active=${allAfter.filter(m => m.status === "active").length} inactive=${allAfter.filter(m => m.status === "inactive").length}`);
       updateStatusBar();
       if (autoRestore) {
         void autoRestoreSessions(store, path, updateStatusBar);
@@ -752,22 +906,25 @@ async function showQuickPick(
   projectPath: string,
   onUpdate: () => void,
 ): Promise<void> {
-  const QUICK_PICK_LIMIT = 20;
+  const config = vscode.workspace.getConfiguration("claudeResurrect");
+  const maxSessions = config.get<number>("maxQuickPickSessions", 10);
 
   const activeItems = store.getActive(projectPath);
   const allByProject = store.getByProject(projectPath);
   const inactiveItems = [...allByProject]
     .filter((m) => m.status === "inactive")
-    .sort((a, b) => b.lastSeen - a.lastSeen);
+    .sort((a, b) => b.lastSeen - a.lastSeen)
+    .slice(0, maxSessions);
   const completedItems = [...allByProject]
     .filter((m) => m.status === "completed")
-    .sort((a, b) => b.lastSeen - a.lastSeen);
+    .sort((a, b) => b.lastSeen - a.lastSeen)
+    .slice(0, maxSessions);
 
   const discovered = discoverSessions(projectPath);
   const trackedIds = new Set(allByProject.map((m) => m.sessionId));
-  const untrackedSessions = discovered.filter(
-    (d) => !trackedIds.has(d.sessionId) && d.fileSize > 0,
-  );
+  const untrackedSessions = discovered
+    .filter((d) => !trackedIds.has(d.sessionId) && d.fileSize > 0)
+    .slice(0, maxSessions);
 
   const hasFile = (m: SessionMapping): boolean =>
     lookupSessionFileSize(projectPath, m.sessionId) > 0;
@@ -775,9 +932,9 @@ async function showQuickPick(
   const merged = [
     ...inactiveItems.filter(hasFile).map((m) => ({ lastSeen: m.lastSeen, kind: "tracked" as const, mapping: m })),
     ...untrackedSessions.map((d) => ({ lastSeen: d.lastSeen, kind: "discovered" as const, session: d })),
-  ].sort((a, b) => b.lastSeen - a.lastSeen);
+  ].sort((a, b) => b.lastSeen - a.lastSeen).slice(0, maxSessions);
 
-  type MenuAction = "new" | "continue" | "manage-presets" | "focus" | "resume-tracked" | "resume-discovered" | "launch-preset";
+  type MenuAction = "new" | "continue" | "manage-presets" | "adopt" | "focus" | "resume-tracked" | "resume-discovered" | "launch-preset";
 
   interface MenuItem extends vscode.QuickPickItem {
     action: MenuAction;
@@ -808,6 +965,11 @@ async function showQuickPick(
     label: "$(gear) Manage Presets",
     description: "Open preset editor panel",
     action: "manage-presets",
+  });
+  items.push({
+    label: "$(plug) Adopt Running Session",
+    description: "Attach to an existing terminal running Claude",
+    action: "adopt",
   });
 
   // Presets section (Feature 5)
@@ -862,7 +1024,7 @@ async function showQuickPick(
   }
 
   // Resumable section
-  let remaining = QUICK_PICK_LIMIT;
+  let remaining = maxSessions;
   const resumableMenuItems: MenuItem[] = [];
   for (const entry of merged) {
     if (remaining <= 0) break;
@@ -878,7 +1040,9 @@ async function showQuickPick(
       });
     } else {
       const size = formatSize(entry.session.fileSize);
-      const discoveredDisplay = entry.session.customTitle ?? entry.session.firstPrompt.slice(0, 40);
+      // Lazy load: only read display info for items that will actually be shown
+      const displayInfo = readSessionDisplayInfo(entry.session.projectPath, entry.session.sessionId);
+      const discoveredDisplay = displayInfo.customTitle ?? entry.session.firstPrompt.slice(0, 40);
       resumableMenuItems.push({
         label: `$(circle-outline) ${discoveredDisplay}`,
         description: [size, formatAge(entry.session.lastSeen)].filter(Boolean).join(" · "),
@@ -935,6 +1099,9 @@ async function showQuickPick(
       break;
     case "manage-presets":
       vscode.commands.executeCommand("claudeResurrect.managePresets");
+      break;
+    case "adopt":
+      vscode.commands.executeCommand("claudeResurrect.adoptSession");
       break;
     case "continue": {
       const contUser = resolveUserName();

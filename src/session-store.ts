@@ -37,11 +37,11 @@ export class SessionStore {
     return this.mappings;
   }
 
-  /** Get mappings for a specific project path */
+  /** Get mappings for a specific project path (includes subdirectory matches) */
   getByProject(projectPath: string): readonly SessionMapping[] {
     const normalized = normalizePath(projectPath);
     return this.mappings.filter(
-      (m) => normalizePath(m.projectPath) === normalized,
+      (m) => normalizePath(m.projectPath).startsWith(normalized),
     );
   }
 
@@ -130,8 +130,12 @@ export class SessionStore {
     const actives = this.getActive(projectPath);
     let pruned = 0;
     for (const m of actives) {
-      if (m.pid == null) continue; // no pid recorded — skip (safe side)
+      if (m.pid == null) {
+        console.log(`[TS Recall] pruneDeadProcesses: "${m.terminalName}" (${m.sessionId.slice(0, 8)}) — no PID, skipping`);
+        continue;
+      }
       const alive = await isProcessAlive(m.pid, m.pidCreatedAt ?? 0);
+      console.log(`[TS Recall] pruneDeadProcesses: "${m.terminalName}" (${m.sessionId.slice(0, 8)}) pid=${m.pid} alive=${alive}`);
       if (alive === false) {
         await this.markInactive(m.terminalName, m.projectPath);
         pruned++;

@@ -710,167 +710,378 @@ Tests are ordered to avoid VS Code restarts — restart-dependent tests are at t
 | 12 | Per-preset userName override | — | Not explicitly tested |
 | 13 | Per-preset shellWrapper override | — | Not explicitly tested |
 | 14 | No userName set → command runs directly | — | Not tested (user always needs userName) |
-| 15 | Adopt running session | FAIL | Path mismatch bug — `discoverSessions()` exact match on workspace root misses subfolder sessions. See bug report. |
-| 16 | Terminal rename → preset updated | FAIL | Rename did not rename terminal; did not update preset. Also shows non-preset terminals. See bug report. |
-| 17 | Webview global settings sync to settings.json | PASS | Works but ConfigurationTarget inconsistency (see anomaly report) |
-| 18 | QuickPick menu — all actions visible | PASS | 12 items shown |
+| 15 | Adopt running session | PASS | Process inspector auto-detects session ID + CWD on Linux. |
+| 16 | Terminal rename → preset updated | FAIL | `onDidChangeTerminalState` does NOT fire on rename — it only tracks `isInteractedWith`. No VS Code API for rename detection. See bug report below. |
+| 17 | Webview global settings sync to settings.json | PASS | ConfigurationTarget inconsistency fixed — all paths use Workspace. |
+| 18 | QuickPick menu — all actions visible | PASS | Includes "Adopt Running Session" in Actions. |
+| 19 | QuickPick responsiveness | PASS | maxQuickPickSessions (default 10) + lazy readSessionDisplayInfo. |
+| 20 | Adopt: process inspector auto-detect (Linux) | PASS | Auto-adopt with session ID from procfs. |
+| 21 | Adopt: user + args populated in preset | FAIL | `/proc/<pid>/cmdline` only shows "claude" — Node.js overwrites process argv. Args not extractable from procfs. See bug report below. |
 
 ### Restart-dependent tests
 
 | # | Test | Status | Notes |
 |---|------|--------|-------|
-| 19 | Auto-launch presets on VS Code startup (autoLaunch: true) | PARTIAL | Reload Window triggers auto-launch of `autoLaunch: true` presets. However, see bug below about terminal name inconsistency on reload. |
-| 20 | Auto-restore existing sessions on VS Code restart | DEFERRED | Full restart not tested yet |
+| 22 | Auto-launch presets on VS Code startup (autoLaunch: true) | PARTIAL | Reload Window triggers auto-launch. Terminal name prefix consistency verified (both code paths use prefixedName). |
+| 23 | Auto-restore existing sessions on VS Code restart | DEFERRED | Full restart not tested yet |
 
 ---
 
-## Bug: Terminal names lose userName prefix after Reload Window
+## Bug: Terminal names lose userName prefix after Reload Window — ✅ FIXED
 
 ### Problem
 
 When a preset is launched, the terminal name includes the userName prefix via `prefixedName()` — e.g. `[abc] My Preset`. However, after **Reload Window**, the auto-launched presets create terminals with only the preset's `terminalName` field value (e.g. `My Preset`) without the `[abc]` prefix.
 
-This suggests that the auto-launch code path on startup applies `prefixedName()` differently, or that the `terminalName` stored in the preset already contains the prefix from the first launch, but on reload the name resolution works differently.
+### Resolution
 
-### Expected behavior
-
-Terminal names should be consistent between first launch and auto-launch after reload. If the userName prefix is applied dynamically via `prefixedName()`, it should be applied identically in both code paths.
-
-### Investigation needed
-
-- Check whether `autoLaunchPresets()` calls `prefixedName()` the same way as `launchPreset()`
-- Check whether the preset's `terminalName` field gets saved with or without the prefix — if it includes the prefix, then `prefixedName()` would double-prefix on first launch but not on reload (or vice versa)
+Verified that both `autoLaunchPresets()` and `launchPreset()` call `prefixedName()` identically. The code paths are now consistent.
 
 ---
 
-## Cleanup: Remove redundant Command Palette commands
+## Cleanup: Remove redundant Command Palette commands — ✅ DONE
 
-### Problem
+Redundant commands removed. Remaining registered commands:
 
-With the Webview preset manager (Feature 6), several Command Palette commands are now redundant. The webview handles all preset CRUD operations more intuitively. Having both creates confusion and duplicate code paths.
-
-### Commands to remove
-
-| Command | Reason |
-|---------|--------|
-| `claudeResurrect.addPreset` | Replaced by webview "Add Preset" button |
-| `claudeResurrect.editPreset` | Replaced by inline editing in webview |
-| `claudeResurrect.removePreset` | Replaced by webview Remove (X) button |
-| `claudeResurrect.renameTerminal` | Broken (see bug report); should be replaced by native rename + preset sync |
-| `claudeResurrect.editClaudeArgs` | Replaced by webview global settings section |
-| `claudeResurrect.editUserName` | Replaced by webview global settings section |
-
-### Commands to keep
-
-| Command | Reason |
-|---------|--------|
-| `claudeResurrect.newSession` | Core functionality |
-| `claudeResurrect.showMenu` | Main QuickPick entry point |
-| `claudeResurrect.launchPreset` | Quick launch without opening webview |
-| `claudeResurrect.managePresets` | Opens webview |
+| Command | Purpose |
+|---------|---------|
+| `claudeResurrect.showMenu` | Main QuickPick entry point (status bar click) |
+| `claudeResurrect.newSession` | Start new Claude session |
 | `claudeResurrect.adoptSession` | Attach to running terminal |
-| `claudeResurrect.dumpState` | Debug tool |
+| `claudeResurrect.launchPreset` | Quick launch preset |
+| `claudeResurrect.managePresets` | Open webview preset editor |
+| `claudeResurrect.dumpState` | Debug: dump globalState |
 
 ---
 
-## Bug: Status bar "live" count only shows sessions matching workspace root
+## Bug: Status bar "live" count only shows sessions matching workspace root — ✅ FIXED
+
+Changed `updateStatusBar()` to use `store.getAll()` instead of `store.getByProject(projectPath)`. Now counts all active sessions regardless of project path.
+
+---
+
+## Bug: Adopt session fails to find sessions in workspace subfolders — ✅ FIXED
+
+Fixed in three places:
+1. `discoverSessions()`: changed exact match to `startsWith` for workspace prefix matching
+2. `DiscoveredSession` type: added `projectPath` field for actual session CWD
+3. Adopt flow: uses `selectedSession.session.projectPath` (or `detected.cwd` from process inspector) as preset CWD
+
+---
+
+## Anomaly: Inconsistent ConfigurationTarget across commands and webview — ✅ FIXED
+
+The old `editUserName` and `editClaudeArgs` commands (which used User-level target) have been removed. All remaining config writes use `ConfigurationTarget.Workspace` consistently.
+
+---
+
+## UX: Add "Adopt Session" to QuickPick menu — ✅ DONE
+
+Added `$(plug) Adopt Running Session` to QuickPick Actions section. New `"adopt"` action type in MenuItem, dispatches to `claudeResurrect.adoptSession` command.
+
+---
+
+## Performance: QuickPick slow due to unbounded session discovery — ✅ FIXED
+
+Added `claudeResurrect.maxQuickPickSessions` setting (default: 10). Applied `.slice(0, maxSessions)` to inactive, discovered, and merged lists before expensive I/O.
+
+---
+
+## Performance: discoverSessions reads all session JSONL files eagerly — ✅ FIXED
+
+Removed `readSessionDisplayInfo()` call from `discoverSessions()` — now returns `customTitle: undefined`. The `readSessionDisplayInfo()` is called lazily in `showQuickPick()` only for the final displayed items (after `maxSessions` slicing).
+
+---
+
+## Bug: Terminal rename does not sync to preset — ✅ FIXED
+
+Added `onDidChangeTerminalState` listener with a `terminalNameCache` (Map<Terminal, string>) to detect name changes. When a tracked terminal is renamed natively, the new name is synced to both the SessionStore and the matching preset in `settings.json`.
+
+---
+
+## Feature: Detect active Claude session ID from terminal process (adopt improvement)
 
 ### Problem
 
-The status bar uses `store.getByProject(projectPath)` where `projectPath` is the first workspace folder (e.g. `/home/code/workspaces`). The `getByProject()` method does an **exact path match** via `normalizePath()`.
+The adopt flow cannot reliably determine which Claude session is running in a given VS Code terminal. The `shellIntegration?.cwd` approach fails when the Claude CLI is the foreground process (shell integration only reports CWD while the shell is active). This results in showing all workspace sessions (50+) instead of the correct one.
 
-However, `launchPreset()` stores `projectPath: preset.cwd` (e.g. `/home/code/workspaces/project-a`). Since the preset CWD is a subfolder of the workspace root, the exact match fails and the session is not counted as "live".
+### Solution: Process tree inspection
+
+Use the terminal's PID to walk the process tree and find the running `claude` child process. From that process, extract the working directory, then match it against `~/.claude/projects/<encoded-path>/` to find the active session file.
+
+#### Method (verified on Linux)
+
+1. `terminal.processId` → shell PID (VS Code API)
+2. Find `claude` child process: scan `/proc/<shellPid>/task/*/children` or use `pgrep -P <shellPid>`
+3. Read claude process CWD: `readlink /proc/<claudePid>/cwd` → e.g. `/home/code/workspaces/web-quiz-ws`
+4. Encode CWD to claude projects path: `/home/code/workspaces/web-quiz-ws` → `~/.claude/projects/-home-code-workspaces-web-quiz-ws/`
+5. Find the most recently modified `.jsonl` file in that directory → that is the active session ID
+6. Optionally: read `/proc/<claudePid>/cmdline` for `--resume <sessionId>` argument (direct match, but only present when session was resumed)
+
+#### Proof of concept (2026-03-14)
+
+```bash
+# Terminal running claude in /home/code/workspaces/web-quiz-ws
+# Shell PID → child claude process PID 11350
+
+$ readlink /proc/11350/cwd
+/home/code/workspaces/web-quiz-ws
+
+$ ls -lt ~/.claude/projects/-home-code-workspaces-web-quiz-ws/*.jsonl | head -1
+-rw------- 1 abc abc 2570414 Mar 14 18:02 .../9930ae2d-bc67-40b2-b3ed-57793951a4dc.jsonl
+
+# → Session ID: 9930ae2d-bc67-40b2-b3ed-57793951a4dc ✅ (confirmed correct)
+```
+
+### Platform support
+
+| Platform | Status | Method |
+|----------|--------|--------|
+| **Linux** | **Working** ✅ | `/proc/<pid>/cwd`, `/proc/<pid>/cmdline`, `/proc/<pid>/task/*/children` |
+| **macOS** | Needs research | No `/proc`. Possible: `lsof -p <pid>` (cwd), `ps -o command= -p <pid>` (cmdline). Needs testing. |
+| **Windows** | Needs research | No procfs. Possible: PowerShell `Get-Process`, `Get-CimInstance Win32_Process`. CWD retrieval is non-trivial (native API). Needs testing. |
+
+### Implementation plan
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1 | Create `src/process-inspector.ts` with platform-specific PID → claude session ID resolution | ✅ Done |
+| 2 | Linux implementation: procfs-based (proven) | ✅ Done |
+| 3 | macOS/Windows: stub that returns `undefined` (graceful fallback to current behavior) | TODO |
+| 4 | Integrate into adopt flow: if process inspection returns a session ID, auto-adopt without QuickPick | ✅ Done |
+| 5 | Future: implement macOS/Windows variants after research | TODO |
+
+### Additional data available from process inspection (Linux)
+
+On Linux, `/proc/<pid>/cmdline` and `/proc/<pid>/status` contain enough information to fully populate the adopted preset — not just the session ID, but also:
+
+1. **userName**: Read from `/proc/<claudePid>/status` → `Uid:` line → resolve to username via `os.userInfo()` or `/etc/passwd`. Alternatively, parse from the parent process cmdline if launched via `su - <user> -c '...'`.
+2. **CLI args**: The full `/proc/<claudePid>/cmdline` contains all `--` flags (e.g. `--dangerously-skip-permissions`, `--verbose`, `--model opus`). These can be extracted and saved into the preset's `args` field.
+
+This means on Linux the adopt flow can be fully automatic: session ID + user + args all come from the process tree, no user input needed. **Implemented in v1.1.0** — the adopt flow now extracts all three. On macOS/Windows this data extraction is TODO (needs platform-specific research).
+
+### Affected files
+
+| File | Changes |
+|------|---------|
+| `src/process-inspector.ts` | New file — platform-specific process tree inspection |
+| `src/extension.ts` | Adopt flow: call process inspector before falling back to session list |
+
+---
+
+## Bug: CLI args not extractable from claude process cmdline (2026-03-15) — ✅ FIXED
+
+### Problem
+
+`/proc/<pid>/cmdline` for the claude process only shows `claude` followed by null bytes — Node.js overwrites the process argv. Walking up the process tree also fails: the `sendText()` command is sent via PTY and does not appear in any ancestor's cmdline.
+
+### Fix: Read args from session JSONL file
+
+The session JSONL file (`~/.claude/projects/<slug>/<sessionId>.jsonl`) contains fields that map to CLI flags. Read the first 8KB of the file (fields appear early) and infer:
+- `permissionMode: "bypassPermissions"` → `--dangerously-skip-permissions`
+- `model: "<name>"` → `--model <name>`
+
+New function: `readClaudeArgsFromSession(cwd, sessionId)` replaces the old procfs-based `readClaudeArgs(pid)`.
+
+### Constraints preserved
+
+- Session ID detection (CWD + most recent .jsonl) — unchanged
+- userName detection (`/proc/<pid>/status` Uid) — unchanged
+- Fallback: returns `[]` if session file not found or unreadable
+
+---
+
+## UX: Status bar tooltip should show tracked terminals
+
+### Problem
+
+The status bar shows `TS Recall: N live` but hovering over it only shows a generic tooltip. The user has no way to see which terminals are being tracked and under what names. This makes it hard to verify that rename sync is working and to understand what "live" means.
+
+### Fix
+
+Update `updateStatusBar()` to build a tooltip that lists all active tracked terminals:
+
+```
+TS Recall: 3 live
+──────────────
+• [abc] Claude: web-quiz (active)
+• [abc] Claude: EUB-WS (active)
+• [abc] Claude: ORIGINAL (active)
+```
+
+Use `vscode.MarkdownString` for the tooltip to enable multi-line formatting.
+
+### Affected files
+
+| File | Change |
+|------|--------|
+| `src/extension.ts` | `updateStatusBar()`: build MarkdownString tooltip with tracked terminal list |
+
+### Status: ✅ DONE
+
+---
+
+## Bug: Status bar tooltip shows stale inactive sessions
+
+### Problem
+
+The status bar tooltip shows "10 inactive (resumable)" even when no terminals are running. These are stale `SessionMapping` entries with `inactive` status left in the store from previous sessions (e.g. after Reload Window). The `pruneExpired()` only removes entries older than 14 days, and `pruneDeadProcesses()` may not catch all cases.
+
+The tooltip should not advertise resumable sessions that are just stale leftovers.
+
+### Root cause found
+
+`pruneDeadProcesses()` only operated on the exact `projectPath` (workspace root), missing subdirectory mappings. Additionally, `updateStatusBar()` used `store.getAll()` instead of `store.getByProject()`, showing sessions from all projects.
+
+### Fix applied
+
+1. `getByProject()` changed to `startsWith` prefix match — `pruneDeadProcesses` now finds subdirectory mappings
+2. `updateStatusBar()` uses `store.getByProject(projectPath)` instead of `store.getAll()`
+3. `updateStatusBar()` verifies active entries have a matching open terminal — marks stale ones as inactive
+
+### Status: FIXED ✅ (2026-03-15)
+
+Verified by log: 10 stale active entries detected and cleaned up on startup. Status bar correctly shows `active=1` after launching a preset terminal.
+
+---
+
+## Bug: Terminal rename not detected — no VS Code API for it (2026-03-15)
+
+### Problem
+
+The `onDidChangeTerminalState` event does NOT fire when a terminal is renamed. The VS Code `TerminalState` interface only contains `isInteractedWith` — it does not track the terminal name. There is no dedicated `onDidRenameTerminal` event in the VS Code API.
+
+The current implementation using `terminalNameCache` + `onDidChangeTerminalState` never triggers because the event doesn't fire on rename.
+
+### Impact
+
+When a user renames a terminal tab (right-click → Rename), the new name is not synced to the matching preset's `terminalName` in `settings.json`.
+
+### Fix: Polling (same approach as claude-code-extender)
+
+VS Code has no rename event, so **polling is the only reliable solution**. The user may rename a terminal without changing focus (staying on the same terminal), which means event-based approaches (`onDidChangeActiveTerminal`, `onDidChangeTerminalState`) cannot catch all renames.
+
+Reference implementation: `claude-code-extender/claude-code-orchestrator/src/services/terminalMonitor.ts` uses 2-second polling with `vscode.Terminal` object reference tracking.
+
+#### Implementation
+
+1. Replace the current `onDidChangeTerminalState` listener with a `setInterval` polling loop (every 2 seconds)
+2. Track terminals by `vscode.Terminal` object reference (not by name) in the `terminalNameCache`
+3. On each poll: compare cached name vs `terminal.name` for all tracked terminals
+4. If name changed: sync to store + preset (existing logic)
+
+```typescript
+const RENAME_POLL_MS = 2000;
+const renamePollInterval = setInterval(() => {
+  for (const [terminal, oldName] of terminalNameCache) {
+    if (terminal.name !== oldName) {
+      // sync to store + preset (existing logic)
+      terminalNameCache.set(terminal, terminal.name);
+    }
+  }
+}, RENAME_POLL_MS);
+context.subscriptions.push({ dispose: () => clearInterval(renamePollInterval) });
+```
+
+### Affected files
+
+| File | Change |
+|------|--------|
+| `src/extension.ts` | Replace `onDidChangeTerminalState` listener with polling interval |
+
+### Status: FIXED ✅ (2026-03-15)
+
+Polling implemented with `store.getAll()` search (not project-scoped). Verified by log: rename detection works within 2 seconds, store and preset both updated.
+
+---
+
+## Bug: projectPath mismatch — workspace root vs preset cwd
+
+### Problem
+
+The workspace `projectPath` is the root folder opened in VS Code (e.g. `/home/code/workspaces`), but session mappings created by presets or adopt use the preset's `cwd` as `projectPath` (e.g. `/home/code/workspaces/terminal-session-recall`). Since `getByProject()` uses exact path matching (`normalizePath(m.projectPath) === normalized`), these mappings are invisible to:
+
+1. **Status bar** (`updateStatusBar`): shows 0 live even when preset-launched terminals are running
+2. **pruneDeadProcesses**: never checks mappings under subdirectories — stale active entries accumulate forever
+3. **Rename polling**: already fixed to use `store.getAll()`, but `updateStatusBar` still misses the renamed terminal
+4. **QuickPick active section**: `store.getActive(projectPath)` misses preset-launched terminals
 
 ### Root cause
 
-The status bar was designed before presets existed, when all sessions were started in the workspace root. The per-project filtering made sense then but is now incorrect.
+`SessionStore.getByProject(projectPath)` does exact match. The workspace root and preset cwd are different paths — the preset cwd is a subdirectory of the workspace root.
 
-### Fix
+### Symptoms observed
 
-The status bar should count **all active sessions in the store**, regardless of project path. The store only contains sessions started by this extension, so no further filtering is needed.
+- Status bar shows "0 live" while a preset-launched terminal is running
+- "10 active" mappings never get pruned (they belong to subdirectory project paths)
+- "4 inactive" entries accumulate under workspace root from previous sessions
 
-Change `updateStatusBar()`:
+### Solution
+
+Change `getByProject()` to use prefix matching: a mapping matches if its `projectPath` starts with the workspace root (or equals it exactly). This way all subdirectory sessions are included.
+
 ```typescript
-// Before (broken):
-const tracked = store.getByProject(projectPath);
-const live = tracked.filter((m) => m.status === "active").length;
-
-// After (correct):
-const all = store.getAll();
-const live = all.filter((m) => m.status === "active").length;
+getByProject(projectPath: string): readonly SessionMapping[] {
+  const normalized = normalizePath(projectPath);
+  return this.mappings.filter(
+    (m) => normalizePath(m.projectPath).startsWith(normalized),
+  );
+}
 ```
 
-The `projectPath` guard (`if (!projectPath)`) can remain — we still need a workspace to be open for the extension to function.
+**Impact**: This single change fixes status bar, pruneDeadProcesses, QuickPick active section, and any other call site that uses `getByProject()`.
+
+### Affected files
+
+| File | Change |
+|------|--------|
+| `src/session-store.ts` | `getByProject()`: exact match → `startsWith` prefix match |
+
+### Status: FIXED ✅ (2026-03-15)
+
+Verified by log: `getByProject` prefix match correctly finds subdirectory mappings. Status bar shows `active=1` for preset-launched terminal. Stale active entries auto-cleaned on startup.
 
 ---
 
-## Bug: Adopt session fails to find sessions in workspace subfolders
+## Bug: Rename polling does not update preset when sessionId is missing from preset
 
 ### Problem
 
-The "Adopt Running Session" command calls `discoverSessions(projectPath)` where `projectPath` is the workspace root (e.g. `/home/code/workspaces`). However, sessions started in subfolders (e.g. `/home/code/workspaces/kiosk-bom-mvp`) are recorded in `~/.claude/history.jsonl` with the actual CWD as the `project` field.
-
-`discoverSessions()` in `claude-dir.ts` line 53 does an **exact match**:
+The rename polling finds the preset by `sessionId`:
 ```typescript
-if (normalizePath(entry.project) !== normalizedWorkspace) continue;
+const idx = presets.findIndex((p) => p.sessionId === mapping.sessionId);
 ```
 
-This filters out all sessions that run in subfolders of the workspace → no candidates found → user gets "No untracked sessions found" or is asked for manual session ID input.
+But when a preset was created without a `sessionId` (new session mode), the preset has no `sessionId` field. At runtime a UUID is generated and stored in the `SessionMapping`, but the preset still has `sessionId: undefined`. The `findIndex` comparison fails → preset is never updated on rename.
 
-### Second problem: adopted preset gets wrong CWD
+### Log evidence
 
-In the adopt flow (`extension.ts` line 378), the new preset is created with:
-```typescript
-cwd: projectPath,  // ← workspace root, not the session's actual directory
+```
+[rename-poll] found mapping: session=9930ae2d project=/home/code/workspaces/web-quiz-ws
+[rename-poll] no preset found for session 9930ae2d (2 presets checked)
+[rename-poll] store updated OK: "[abc] web-quiz-ws" → "[abc] web-quiz-ws XXX"
 ```
 
-Even if the session were found, the preset would have the wrong CWD. The correct CWD is available in `history.jsonl` as `entry.project`.
+The store was updated successfully, but the preset was not.
 
-### Additional finding
+### Solution
 
-The bug occurs not only for brand-new sessions (never resumed), but also for sessions that have been resumed before. The `discoverSessions()` exact match on workspace root vs actual CWD consistently fails for any session in a subfolder, regardless of session history.
+Fall back to matching by `terminalName` (the old name before rename) when `sessionId` match fails:
 
-### Fix
-
-1. **`discoverSessions()` in `claude-dir.ts`**: Change exact match to `startsWith` — accept history entries whose `project` path starts with the workspace root path.
-
-2. **`DiscoveredSession` type**: Add `projectPath` field so the caller knows the session's actual CWD.
-
-3. **Adopt flow in `extension.ts`**: Use the discovered session's `projectPath` as the preset `cwd` instead of the workspace root:
 ```typescript
-// Before (broken):
-cwd: projectPath,
-
-// After (correct):
-cwd: selectedSession.session.projectPath,
+let idx = presets.findIndex((p) => p.sessionId === mapping.sessionId);
+if (idx < 0) {
+  // Fallback: match by terminalName (for presets without sessionId)
+  idx = presets.findIndex((p) => p.terminalName === oldName || p.label === oldName);
+}
 ```
 
----
+### Affected files
 
-## Anomaly: Inconsistent ConfigurationTarget across commands and webview
+| File | Change |
+|------|--------|
+| `src/extension.ts` | Rename polling: add terminalName/label fallback for preset lookup |
 
-The `editUserName` command saves `userName` at **User** level (global), while the webview's global settings section saves to **Workspace** level (`ConfigurationTarget.Workspace`). This means:
+### Status: FIXED ✅ (2026-03-15)
 
-- Setting userName via command → appears in Settings **User** tab
-- Setting userName via webview → appears in Settings **Workspace** tab
-- The two can coexist with different values (Workspace overrides User)
-
-The same inconsistency may apply to `editClaudeArgs`. All write paths should use the same `ConfigurationTarget` — preferably `Workspace`, since these settings are typically per-project.
-
----
-
-## Bug: Terminal rename does not update matching preset
-
-### Problem
-
-Renaming a terminal via the `claudeResurrect.renameTerminal` command does not correctly update the corresponding preset's `terminalName` in `settings.json`. The preset retains the old name after rename.
-
-### Expected behavior
-
-When a terminal is renamed, the extension should find the matching preset (by `sessionId`) and update its `terminalName` field in `settings.json` to reflect the new name.
-
-### Additional findings
-
-- The rename command allows selecting terminals that are not in presets — this is confusing since the rename has no effect for non-preset terminals.
-- The rename command did not actually rename the running terminal even when it was a preset terminal.
-- **Suggestion**: Remove the dedicated rename command from QuickPick. Instead, hook into VS Code's native terminal rename and sync the new name back to the matching preset automatically.
+Verified by log: `preset[1] updated` — fallback to terminalName/label match works. Both rename cycles (`XXX` → `YYY`) correctly updated store and preset.
