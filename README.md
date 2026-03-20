@@ -2,6 +2,8 @@
 
 > Unofficial VSCode extension — Automatically restore Claude Code CLI sessions after restart
 
+![Demo](art/demo.gif)
+
 ![UI Overview](art/ui-overview.png)
 
 ## Features
@@ -57,6 +59,8 @@ This extension does NOT:
 ## 日本語
 
 > 非公式 VSCode 拡張 — Claude Code CLI のセッションを VSCode 再起動後に自動復元
+
+![デモ](art/demo.gif)
 
 ![UI 概要](art/ui-overview-ja.png)
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.7
+
+- Docs: README にデモ GIF を追加（Marketplace ストアページ用）
+
 ## 1.0.6
 
 - Fix: conversation data なしセッションが active のまま残り、毎起動時に警告が繰り返される問題を修正 (#64)
