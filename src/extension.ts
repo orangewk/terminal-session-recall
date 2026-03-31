@@ -186,7 +186,7 @@ async function startNewSession(
     isTransient: true,
   });
   terminal.show();
-  sendTextWhenReady(terminal, `${getClaudePath()} --session-id ${sessionId}`);
+  terminal.sendText(`${getClaudePath()} --session-id ${sessionId}`);
   terminalSessionMap.set(terminal, sessionId);
 
   // Record PID for liveness checking on next startup
@@ -236,7 +236,7 @@ async function resumeSession(
     cwd: projectPath,
     isTransient: true,
   });
-  sendTextWhenReady(terminal, `${getClaudePath()} --resume ${sessionId}`);
+  terminal.sendText(`${getClaudePath()} --resume ${sessionId}`);
   terminal.show();
   terminalSessionMap.set(terminal, sessionId);
 
@@ -473,7 +473,7 @@ async function showQuickPick(
         cwd: projectPath,
         isTransient: true,
       });
-      sendTextWhenReady(terminal, `${getClaudePath()} --continue`);
+      terminal.sendText(`${getClaudePath()} --continue`);
       terminal.show();
       break;
     }
@@ -513,64 +513,6 @@ async function showQuickPick(
       }
       break;
   }
-}
-
-/**
- * Wait for shell readiness, then send text.
- *
- * 3-tier fallback for WSL2 compatibility:
- *   1. Shell integration ready → send immediately
- *   2. Shell type detected (onDidChangeTerminalState) → send after short delay
- *      for .bashrc initialization to complete
- *   3. Final timeout fallback (15s)
- */
-function sendTextWhenReady(
-  terminal: vscode.Terminal,
-  text: string,
-  timeoutMs = 15000,
-): void {
-  const name = terminal.name;
-  log.debug(`sendTextWhenReady[${name}]: start`);
-
-  if (terminal.shellIntegration) {
-    log.debug(`sendTextWhenReady[${name}]: shellIntegration already ready, sending immediately`);
-    terminal.sendText(text);
-    return;
-  }
-
-  log.debug(`sendTextWhenReady[${name}]: waiting for shell readiness (timeout=${timeoutMs}ms)`);
-  let sent = false;
-  let shellDelayTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const send = (tier: string): void => {
-    if (sent) return;
-    sent = true;
-    log.info(`sendTextWhenReady[${name}]: sent via ${tier}`);
-    clearTimeout(fallbackTimer);
-    if (shellDelayTimer) clearTimeout(shellDelayTimer);
-    shellIntDisposable.dispose();
-    stateDisposable.dispose();
-    terminal.sendText(text);
-  };
-
-  // Tier 1: Shell integration becomes ready → send immediately
-  const shellIntDisposable = vscode.window.onDidChangeTerminalShellIntegration(
-    ({ terminal: readyTerminal }) => {
-      if (readyTerminal === terminal) send("tier1:shellIntegration");
-    },
-  );
-
-  // Tier 2: Shell type detected → send after delay for init completion
-  const stateDisposable = vscode.window.onDidChangeTerminalState((t) => {
-    if (t === terminal && t.state.shell != null) {
-      log.debug(`sendTextWhenReady[${name}]: tier2 shell type detected: ${t.state.shell}, delaying 2s`);
-      stateDisposable.dispose();
-      shellDelayTimer = setTimeout(() => send("tier2:shellDetected"), 2000);
-    }
-  });
-
-  // Tier 3: Final fallback timeout
-  const fallbackTimer = setTimeout(() => send("tier3:timeout"), timeoutMs);
 }
 
 function formatAge(timestamp: number): string {
