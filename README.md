@@ -2,9 +2,9 @@
 
 > Unofficial VSCode extension — Automatically restore Claude Code CLI sessions after restart
 
-> **v1.1.0-beta**: This version adds urgent support for the resume dialog introduced in Claude CLI v2.1.90+. Because the CLI change was not accompanied by a public API, this extension detects the dialog via terminal output matching — behavior may be fragile. Please report issues at [GitHub Issues](https://github.com/orangewk/terminal-session-recall/issues).
+> **Maintenance paused (2026-04):** Claude CLI ships breaking changes too frequently for this extension to keep up. No further updates are planned for the foreseeable future, and current versions may break on newer CLI releases. Use at your own risk.
 
-> **v1.1.0-beta**: このバージョンは Claude CLI v2.1.90+ で追加された resume ダイアログへの緊急対応です。CLI 側に公開 API がないため、ターミナル出力のパターンマッチで検知しており、動作が不安定になる可能性があります。不具合は [GitHub Issues](https://github.com/orangewk/terminal-session-recall/issues) へ報告してください。
+> **メンテナンス休止中 (2026-04):** Claude CLI の破壊的変更の頻度が高く、追随を断念しました。当面更新の予定はなく、新しい CLI バージョンでは動作しなくなる可能性があります。ご利用は自己責任でお願いします。
 
 ![Demo](art/demo.gif)
 
